@@ -652,7 +652,7 @@ export default function Home() {
 
                   <div className="rounded-xl bg-white p-4 shadow">
                     <div className="text-base font-semibold text-gray-900">
-                      End Message
+                      Travel Notes
                     </div>
                     <p className="mt-2 text-sm text-gray-700">
                       {result.end_message?.trim()
