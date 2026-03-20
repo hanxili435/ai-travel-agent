@@ -12,16 +12,56 @@ type FormData = {
   notes: string;
 };
 
-type Payload = {
-  origin: string;
-  destination: string;
-  currency: string;
-  budget: number;
-  start_date: string;
-  end_date: string;
-  vacation_style: string;
-  notes: string;
+export type BookingLink = { label: string; url: string };
+
+/** Backend API success response (exact JSON shape) */
+export type TravelPlanResult = {
+  trip_summary: {
+    origin: string;
+    destination: string;
+    currency: string;
+    budget: number;
+    start_date: string;
+    end_date: string;
+    vacation_style: string;
+    notes: string;
+  };
+  itinerary: Array<{
+    day: number;
+    title: string;
+    activities: string[];
+  }>;
+  budget_breakdown: {
+    flights: string;
+    hotels: string;
+    activities: string;
+    total: string;
+    remaining_budget: string;
+  };
+  booking_links_summary: {
+    flights: BookingLink[];
+    hotels: BookingLink[];
+    activities: BookingLink[];
+  };
+  end_message: string;
 };
+
+type TravelPlanError = { error: string };
+
+type TravelPlanState = TravelPlanResult | TravelPlanError | null;
+
+function isTravelPlanError(r: TravelPlanState): r is TravelPlanError {
+  return (
+    r !== null &&
+    typeof r === "object" &&
+    "error" in r &&
+    typeof (r as TravelPlanError).error === "string"
+  );
+}
+
+function isTravelPlanSuccess(r: TravelPlanState): r is TravelPlanResult {
+  return r !== null && !isTravelPlanError(r);
+}
 
 export default function Home() {
   const [formData, setFormData] = useState<FormData>({
@@ -36,10 +76,104 @@ export default function Home() {
   });
 
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<Payload | null>(null);
+  const [result, setResult] = useState<TravelPlanState>(null);
+
+  const [validationErrors, setValidationErrors] = useState<{
+    origin?: string;
+    destination?: string;
+    budget?: string;
+    dates?: string;
+  } | null>(null);
+
+  const [lowBudgetWarning, setLowBudgetWarning] = useState<string | null>(
+    null,
+  );
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+
+    // Clear old messages before validating a new submission.
+    setValidationErrors(null);
+    setLowBudgetWarning(null);
+
+    const originTrimmed = formData.origin.trim();
+    const destinationTrimmed = formData.destination.trim();
+
+    const isOnlyNumbers = (value: string) => /^\d+$/.test(value);
+
+    if (originTrimmed.length < 2 || isOnlyNumbers(originTrimmed)) {
+      setValidationErrors({
+        origin:
+          "Origin must be at least 2 characters and must not be only numbers.",
+      });
+      return;
+    }
+
+    if (
+      destinationTrimmed.length < 2 ||
+      isOnlyNumbers(destinationTrimmed)
+    ) {
+      setValidationErrors({
+        destination:
+          "Destination must be at least 2 characters and must not be only numbers.",
+      });
+      return;
+    }
+
+    const budgetNumber = Number(formData.budget);
+    const hasValidBudget = Number.isFinite(budgetNumber) && budgetNumber > 0;
+
+    if (!hasValidBudget) {
+      setValidationErrors({
+        budget: "Budget must be greater than 0.",
+      });
+      return;
+    }
+
+    if (budgetNumber < 100) {
+      setLowBudgetWarning(
+        "This budget may be too low for the selected trip.",
+      );
+    }
+
+    const parseLocalMidnight = (value: string) => {
+      // Expect YYYY-MM-DD
+      const parts = value.split("-");
+      if (parts.length !== 3) return null;
+      const [y, m, d] = parts.map((p) => Number(p));
+      if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) {
+        return null;
+      }
+      const dt = new Date(y, m - 1, d);
+      dt.setHours(0, 0, 0, 0);
+      return dt;
+    };
+
+    const start = parseLocalMidnight(formData.start_date);
+    const end = parseLocalMidnight(formData.end_date);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    if (!start || !end) {
+      setValidationErrors({
+        dates: "Please select valid start and end dates.",
+      });
+      return;
+    }
+
+    if (start.getTime() < today.getTime()) {
+      setValidationErrors({
+        dates: "Start date must be today or later.",
+      });
+      return;
+    }
+
+    if (end.getTime() < start.getTime()) {
+      setValidationErrors({
+        dates: "End date must be on or after the start date.",
+      });
+      return;
+    }
 
     const payload = {
       origin: formData.origin,
@@ -58,76 +192,25 @@ export default function Home() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+        },
+        body: JSON.stringify(payload),
+      });
 
-  if (!res.ok) {
-    throw new Error("Failed to generate plan");
-  }
+      if (!res.ok) {
+        throw new Error("Failed to generate plan");
+      }
 
-  const data = await res.json();
-  setResult(data);
-} catch (error) {
-  console.error(error);
-  setResult({
-    error: "Something went wrong while generating the plan.",
-  } as any);
-} finally {
-  setLoading(false);
-}
+      const data = (await res.json()) as TravelPlanResult;
+      setResult(data);
+    } catch (error) {
+      console.error(error);
+      setResult({
+        error: "Something went wrong while generating the plan.",
+      });
+    } finally {
+      setLoading(false);
+    }
   };
-
-  type TravelResult = {
-    error?: string;
-    trip_summary?: {
-      origin?: string;
-      destination?: string;
-      budget?: string;
-      dates?: string;
-      duration_days?: number;
-      style?: string;
-      notes?: string;
-    };
-    flight_recommendation?: {
-      summary?: string;
-      booking_tips?: string[];
-      suggested_links?: Array<{
-        label?: string;
-        url?: string;
-      }>;
-    };
-    
-    hotel_recommendation?: {
-      summary?: string;
-      recommended_areas?: Array<{
-        area?: string;
-        why?: string;
-      }> | string[];
-      booking_tips?: string[];
-      suggested_links?: Array<{
-        label?: string;
-        url?: string;
-      }>;
-    };
-    itinerary?: Array<{
-      day?: number;
-      title?: string;
-      activities?: string[];
-      plan?: string;
-      text?: string;
-    }>;
-    useful_links?: Array<{
-      label?: string;
-      url?: string;
-      title?: string;
-      name?: string;
-      link?: string;
-      href?: string;
-    }>;
-  };
-  
-  const travelResult = (result ?? null) as TravelResult | null;
 
   return (
     <div className="min-h-screen bg-blue-50 flex items-center justify-center px-4 py-10">
@@ -174,6 +257,11 @@ export default function Home() {
                   className="w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
                   required
                 />
+                {validationErrors?.origin ? (
+                  <p className="text-xs text-red-700">
+                    {validationErrors.origin}
+                  </p>
+                ) : null}
               </div>
               {/* Destination */}
               <div className="space-y-1.5">
@@ -197,6 +285,11 @@ export default function Home() {
                   className="w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
                   required
                 />
+                {validationErrors?.destination ? (
+                  <p className="text-xs text-red-700">
+                    {validationErrors.destination}
+                  </p>
+                ) : null}
               </div>
               {/* Budget section (currency + amount) */}
               <div className="space-y-1.5">
@@ -250,6 +343,13 @@ export default function Home() {
                     />
                   </div>
                 </div>
+                {validationErrors?.budget ? (
+                  <p className="text-xs text-red-700">{validationErrors.budget}</p>
+                ) : lowBudgetWarning ? (
+                  <p className="text-xs text-amber-700">
+                    {lowBudgetWarning}
+                  </p>
+                ) : null}
               </div>
               {/* Start Date */}
               <div className="space-y-1.5">
@@ -294,6 +394,11 @@ export default function Home() {
                   className="w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
                   required
                 />
+                {validationErrors?.dates ? (
+                  <p className="text-xs text-red-700">
+                    {validationErrors.dates}
+                  </p>
+                ) : null}
               </div>
               {/* Vacation Style */}
               <div className="space-y-1.5">
@@ -355,8 +460,7 @@ export default function Home() {
           </div>
         </div>
         {/* Below the form: travel plan info */}
-                {/* Below the form: travel plan info */}
-                <div className="mt-8 border-t border-gray-100 pt-6">
+        <div className="mt-8 border-t border-gray-100 pt-6">
           <h2 className="text-lg font-semibold text-gray-900">
             Your Travel Plan
           </h2>
@@ -365,241 +469,199 @@ export default function Home() {
             <p className="mt-1 text-sm text-gray-600">
               Generating your travel plan...
             </p>
-          ) : travelResult === null ? (
+          ) : result === null ? (
             <p className="mt-1 text-sm text-gray-600">
               Your generated itinerary will appear here after submission.
             </p>
           ) : (
             <div className="mt-4 space-y-4">
-              {travelResult.error ? (
+              {isTravelPlanError(result) ? (
                 <div className="rounded-xl bg-red-50 p-4 text-sm text-red-700">
-                  {travelResult.error}
+                  {result.error}
                 </div>
               ) : null}
 
-              <div className="rounded-xl bg-white p-4 shadow">
-                <div className="text-base font-semibold text-gray-900">
-                  🧾 Trip Summary
-                </div>
-                <div className="mt-2 space-y-1 text-sm text-gray-700">
-                  <p>
-                    <span className="font-medium">Origin:</span>{" "}
-                    {travelResult.trip_summary?.origin ?? "—"}
-                  </p>
-                  <p>
-                    <span className="font-medium">Destination:</span>{" "}
-                    {travelResult.trip_summary?.destination ?? "—"}
-                  </p>
-                  <p>
-                    <span className="font-medium">Budget:</span>{" "}
-                    {travelResult.trip_summary?.budget ?? "—"}
-                  </p>
-                  <p>
-                    <span className="font-medium">Dates:</span>{" "}
-                    {travelResult.trip_summary?.dates ?? "—"}
-                  </p>
-                  <p>
-                    <span className="font-medium">Duration:</span>{" "}
-                    {travelResult.trip_summary?.duration_days ?? "—"} days
-                  </p>
-                  <p>
-                    <span className="font-medium">Style:</span>{" "}
-                    {travelResult.trip_summary?.style ?? "—"}
-                  </p>
-                  <p>
-                    <span className="font-medium">Notes:</span>{" "}
-                    {travelResult.trip_summary?.notes || "—"}
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="rounded-xl bg-white p-4 shadow">
-                  <div className="text-base font-semibold text-gray-900">
-                    ✈️ Flight Recommendation
+              {isTravelPlanSuccess(result) ? (
+                <>
+                  <div className="rounded-xl bg-white p-4 shadow">
+                    <div className="text-base font-semibold text-gray-900">
+                      Trip Summary
+                    </div>
+                    <div className="mt-2 space-y-1 text-sm text-gray-700">
+                      <p>
+                        <span className="font-medium">Origin:</span>{" "}
+                        {result.trip_summary?.origin ?? "—"}
+                      </p>
+                      <p>
+                        <span className="font-medium">Destination:</span>{" "}
+                        {result.trip_summary?.destination ?? "—"}
+                      </p>
+                      <p>
+                        <span className="font-medium">Currency:</span>{" "}
+                        {result.trip_summary?.currency ?? "—"}
+                      </p>
+                      <p>
+                        <span className="font-medium">Budget:</span>{" "}
+                        {typeof result.trip_summary?.budget === "number" &&
+                        !Number.isNaN(result.trip_summary.budget)
+                          ? result.trip_summary.budget
+                          : "—"}
+                      </p>
+                      <p>
+                        <span className="font-medium">Start Date:</span>{" "}
+                        {result.trip_summary?.start_date ?? "—"}
+                      </p>
+                      <p>
+                        <span className="font-medium">End Date:</span>{" "}
+                        {result.trip_summary?.end_date ?? "—"}
+                      </p>
+                      <p>
+                        <span className="font-medium">Vacation Style:</span>{" "}
+                        {result.trip_summary?.vacation_style ?? "—"}
+                      </p>
+                      <p>
+                        <span className="font-medium">Notes:</span>{" "}
+                        {result.trip_summary?.notes?.trim()
+                          ? result.trip_summary.notes
+                          : "—"}
+                      </p>
+                    </div>
                   </div>
 
-                  <div className="mt-2 space-y-2 text-sm text-gray-700">
-                    <p>{travelResult.flight_recommendation?.summary ?? "—"}</p>
-
-                    {(travelResult.flight_recommendation?.booking_tips?.length ?? 0) > 0 && (
-                      <div>
-                        <div className="font-medium text-gray-900">Booking Tips</div>
-                        <ul className="mt-1 list-disc pl-5">
-                          {travelResult.flight_recommendation?.booking_tips?.map((tip, idx) => (
-                            <li key={idx}>{tip}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-
-                    {(travelResult.flight_recommendation?.suggested_links?.length ?? 0) > 0 && (
-                      <div>
-                        <div className="font-medium text-gray-900">Suggested Links</div>
-                        <div className="mt-1 space-y-1">
-                        {travelResult.flight_recommendation?.suggested_links?.map((link, idx) => {
-  if (!link || typeof link !== "object") return null;
-
-  const label = link.label ?? "Open Link";
-  const url = link.url ?? "#";
-
-  return (
-    <a
-      key={`${url}-${idx}`}
-      href={url}
-      target="_blank"
-      rel="noreferrer"
-      className="block text-sm font-medium text-blue-700 hover:text-blue-800 hover:underline"
-    >
-      {label}
-    </a>
-  );
-})}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                
-
-                <div className="rounded-xl bg-white p-4 shadow">
-  <div className="text-base font-semibold text-gray-900">
-    🏨 Hotel Recommendation
-  </div>
-
-  <div className="mt-2 space-y-2 text-sm text-gray-700">
-    <p>{travelResult.hotel_recommendation?.summary ?? "—"}</p>
-
-    {(travelResult.hotel_recommendation?.recommended_areas?.length ?? 0) > 0 && (
-      <div>
-        <div className="font-medium text-gray-900">Recommended Areas</div>
-        <ul className="mt-1 list-disc pl-5">
-          {travelResult.hotel_recommendation?.recommended_areas?.map((item, idx) => {
-            if (!item || typeof item !== "object") return null;
-
-            return (
-              <li key={idx}>
-                <span className="font-medium">{item.area ?? "Area"}</span>
-                {item.why ? ` — ${item.why}` : ""}
-              </li>
-            );
-          })}
-        </ul>
-      </div>
-    )}
-
-    {(travelResult.hotel_recommendation?.booking_tips?.length ?? 0) > 0 && (
-      <div>
-        <div className="font-medium text-gray-900">Booking Tips</div>
-        <ul className="mt-1 list-disc pl-5">
-          {travelResult.hotel_recommendation?.booking_tips?.map((tip, idx) => (
-            <li key={idx}>{tip}</li>
-          ))}
-        </ul>
-      </div>
-    )}
-
-    {(travelResult.hotel_recommendation?.suggested_links?.length ?? 0) > 0 && (
-      <div>
-        <div className="font-medium text-gray-900">Suggested Links</div>
-        <div className="mt-1 space-y-1">
-          {travelResult.hotel_recommendation?.suggested_links?.map((link, idx) => {
-            if (!link || typeof link !== "object") return null;
-
-            const label = link.label ?? "Open Link";
-            const url = link.url ?? "#";
-
-            return (
-              <a
-                key={`${url}-${idx}`}
-                href={url}
-                target="_blank"
-                rel="noreferrer"
-                className="block text-sm font-medium text-blue-700 hover:text-blue-800 hover:underline"
-              >
-                {label}
-              </a>
-            );
-          })}
-        </div>
-      </div>
-    )}
-  </div>
-</div>
-</div>  
-
-              <div className="rounded-xl bg-white p-4 shadow">
-                <div className="text-base font-semibold text-gray-900">
-                  🗓️ Day-by-Day Plan
-                </div>
-                <div className="mt-3 space-y-3">
-                  {(travelResult.itinerary?.length ?? 0) === 0 ? (
-                    <p className="text-sm text-gray-700">—</p>
-                  ) : (
-                    travelResult.itinerary!.map((item, idx) => {
-                      const dayNumber = item.day ?? idx + 1;
-                      return (
-                        <div
-                          key={`${dayNumber}-${idx}`}
-                          className="rounded-lg border border-gray-100 bg-white p-3"
-                        >
-                          <div className="text-sm font-semibold text-gray-900">
-                            Day {dayNumber}
-                            {item.title ? `: ${item.title}` : ""}
-                          </div>
-
-                          {(item.activities?.length ?? 0) > 0 ? (
-                            <ul className="mt-2 list-disc pl-5 text-sm text-gray-700">
-                              {item.activities?.map((activity, i) => (
-                                <li key={i}>{activity}</li>
-                              ))}
-                            </ul>
-                          ) : (
-                            <div className="mt-1 text-sm text-gray-700">
-                              {item.plan ?? item.text ?? "—"}
+                  <div className="rounded-xl bg-white p-4 shadow">
+                    <div className="text-base font-semibold text-gray-900">
+                      Day-by-Day Plan
+                    </div>
+                    <div className="mt-3 space-y-3">
+                      {(result.itinerary?.length ?? 0) === 0 ? (
+                        <p className="text-sm text-gray-700">—</p>
+                      ) : (
+                        (result.itinerary ?? []).map((item, idx) => {
+                          const dayNumber = item?.day ?? idx + 1;
+                          const title = item?.title?.trim() ? item.title : "";
+                          const activities = Array.isArray(item?.activities)
+                            ? item.activities
+                            : [];
+                          return (
+                            <div
+                              key={`${dayNumber}-${idx}`}
+                              className="rounded-lg border border-gray-100 bg-gray-50/80 p-3"
+                            >
+                              <div className="text-sm font-semibold text-gray-900">
+                                Day {dayNumber}
+                                {title ? `: ${title}` : ""}
+                              </div>
+                              {activities.length === 0 ? (
+                                <p className="mt-2 text-sm text-gray-700">—</p>
+                              ) : (
+                                <ul className="mt-2 list-disc pl-5 text-sm text-gray-700">
+                                  {activities.map((activity, i) => (
+                                    <li key={i}>
+                                      {typeof activity === "string"
+                                        ? activity
+                                        : String(activity ?? "")}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
                             </div>
-                          )}
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl bg-white p-4 shadow">
+                    <div className="text-base font-semibold text-gray-900">
+                      Total Budget Breakdown
+                    </div>
+                    <div className="mt-2 space-y-1 text-sm text-gray-700">
+                      <p>
+                        <span className="font-medium">Flights:</span>{" "}
+                        {result.budget_breakdown?.flights ?? "—"}
+                      </p>
+                      <p>
+                        <span className="font-medium">Hotels:</span>{" "}
+                        {result.budget_breakdown?.hotels ?? "—"}
+                      </p>
+                      <p>
+                        <span className="font-medium">Activities:</span>{" "}
+                        {result.budget_breakdown?.activities ?? "—"}
+                      </p>
+                      <p>
+                        <span className="font-medium">Total:</span>{" "}
+                        {result.budget_breakdown?.total ?? "—"}
+                      </p>
+                      <p>
+                        <span className="font-medium">Remaining Budget:</span>{" "}
+                        {result.budget_breakdown?.remaining_budget ?? "—"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl bg-white p-4 shadow">
+                    <div className="text-base font-semibold text-gray-900">
+                      Booking Links Summary
+                    </div>
+                    <div className="mt-3 space-y-4 text-sm">
+                      {(
+                        [
+                          ["Flights", result.booking_links_summary?.flights],
+                          ["Hotels", result.booking_links_summary?.hotels],
+                          [
+                            "Activities",
+                            result.booking_links_summary?.activities,
+                          ],
+                        ] as const
+                      ).map(([label, links]) => (
+                        <div key={label}>
+                          <div className="font-medium text-gray-900">
+                            {label}
+                          </div>
+                          <div className="mt-2 space-y-2">
+                            {[0, 1, 2].map((slot) => {
+                              const link = Array.isArray(links)
+                                ? links[slot]
+                                : undefined;
+                              const url = link?.url?.trim();
+                              const linkLabel = link?.label?.trim() || "—";
+                              if (!url) {
+                                return (
+                                  <div key={slot} className="text-gray-500">
+                                    {linkLabel}
+                                  </div>
+                                );
+                              }
+                              return (
+                                <a
+                                  key={slot}
+                                  href={url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="block font-medium text-blue-700 hover:text-blue-800 hover:underline"
+                                >
+                                  {linkLabel}
+                                </a>
+                              );
+                            })}
+                          </div>
                         </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
+                      ))}
+                    </div>
+                  </div>
 
-              <div className="rounded-xl bg-white p-4 shadow">
-                <div className="text-base font-semibold text-gray-900">
-                  🔗 Useful Links
-                </div>
-                <div className="mt-3 space-y-2">
-  {(travelResult.useful_links?.length ?? 0) === 0 ? (
-    <p className="text-sm text-gray-700">—</p>
-  ) : (
-    travelResult.useful_links!.map((link, idx) => {
-      if (!link || typeof link !== "object") {
-        return null;
-      }
-
-      const label =
-        link.label || link.title || link.name || "Open Link";
-      const url =
-        link.url || link.link || link.href || "#";
-
-      return (
-        <a
-          key={`${url}-${idx}`}
-          href={url}
-          target="_blank"
-          rel="noreferrer"
-          className="block text-sm font-medium text-blue-700 hover:text-blue-800 hover:underline"
-        >
-          {String(label)}
-        </a>
-      );
-    })
-  )}
-</div>
-              </div>
+                  <div className="rounded-xl bg-white p-4 shadow">
+                    <div className="text-base font-semibold text-gray-900">
+                      End Message
+                    </div>
+                    <p className="mt-2 text-sm text-gray-700">
+                      {result.end_message?.trim()
+                        ? result.end_message
+                        : "—"}
+                    </p>
+                  </div>
+                </>
+              ) : null}
             </div>
           )}
         </div>
